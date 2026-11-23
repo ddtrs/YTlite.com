@@ -1,0 +1,11 @@
+diff --git a/smarttubetv/proguard-rules.pro b/smarttubetv/proguard-rules.pro
+index 2752fe6..fb17865 100644
+--- a/smarttubetv/proguard-rules.pro
++++ b/smarttubetv/proguard-rules.pro
+@@ -36,3 +36,6 @@
+ -dontwarn org.slf4j.**
+ 
+ # End Enable minification
++
++# stjson (Rust/JNI): native methods are looked up by name
++-keep class com.liskovsoft.googlecommon.common.converters.jsonpath.nativeimpl.NativeJson { native <methods>; }
