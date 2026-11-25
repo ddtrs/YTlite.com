@@ -1,7 +1,7 @@
 name: Build SmartTube APK (with Rust JSON)
 
 on:
-  workflow_dispatch:   # запуск вручную кнопкой "Run workflow"
+  workflow_dispatch:
   push:
     branches: [ main, master ]
 
@@ -53,26 +53,40 @@ jobs:
             NDK_PATH="/usr/local/lib/android/sdk/ndk/26.3.11579264"
           fi
           export ANDROID_NDK_HOME="$NDK_PATH"
-          echo "Using NDK: $ANDROID_NDK_HOME"
           sed -i 's/\r$//' SmartTube/MediaServiceCore/youtubeapi/rust/build-android.sh
           chmod +x SmartTube/MediaServiceCore/youtubeapi/rust/build-android.sh
           SmartTube/MediaServiceCore/youtubeapi/rust/build-android.sh armeabi-v7a arm64-v8a x86
 
-      - name: Build APK (debug-signed, installs without extra steps)
+      - name: Build Release APK
         working-directory: SmartTube
         run: |
           chmod +x gradlew
-          ./gradlew assembleStbetaDebug -PskipRust --stacktrace
+          ./gradlew assembleStbetaRelease -PskipRust --stacktrace
+
+      - name: Sign Release APK
+        run: |
+          KEYSTORE="$RUNNER_TEMP/release.keystore"
+          keytool -genkeypair -v -keystore "$KEYSTORE" -alias smarttube \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=SmartTube, OU=Dev, O=Custom, L=Kyiv, S=Kyiv, C=UA"
+          APKSIGNER=$(ls /usr/local/lib/android/sdk/build-tools/*/apksigner | sort -V | tail -n1)
+          mkdir -p signed_apks
+          for apk in SmartTube/smarttubetv/build/outputs/apk/stbeta/release/*.apk; do
+            base=$(basename "$apk" -unsigned.apk)
+            "$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android \
+              --out "signed_apks/${base}-signed.apk" "$apk"
+          done
 
       - name: Check that the Rust library is inside the APK
         run: |
-          APK=$(ls SmartTube/smarttubetv/build/outputs/apk/stbeta/debug/*.apk | head -n1)
+          APK=$(ls signed_apks/*universal*.apk signed_apks/*armeabi-v7a*.apk 2>/dev/null | head -n1)
           echo "$APK"
           unzip -l "$APK" | grep libstjson
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SmartTube-rust-apk
-          path: SmartTube/smarttubetv/build/outputs/apk/stbeta/debug/*.apk
+          name: SmartTube-rust-release-apk
+          path: signed_apks/*.apk
           if-no-files-found: error
           
