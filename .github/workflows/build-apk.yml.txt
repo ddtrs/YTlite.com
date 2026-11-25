@@ -1,0 +1,94 @@
+name: Build SmartTube APK (Rust JSON + YouTube TV UI)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+env:
+  SMARTTUBE_SHA: a0c319a88cc7ac65749dd353c404e4aa3fddb9bc
+  MEDIASERVICECORE_SHA: bad6cb5791f996e6026f1c4a76313adc94c001c7
+  SHAREDMODULES_SHA: e12618a07ada786d5b731b2d668efe1383992547
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout patches and UI scripts
+        uses: actions/checkout@v4
+
+      - name: Fetch SmartTube sources at pinned commits
+        run: |
+          git clone https://github.com/yuliskov/SmartTube.git SmartTube
+          git -C SmartTube checkout "$SMARTTUBE_SHA"
+          rm -rf SmartTube/MediaServiceCore SmartTube/SharedModules
+          git clone https://github.com/yuliskov/MediaServiceCore.git SmartTube/MediaServiceCore
+          git -C SmartTube/MediaServiceCore checkout "$MEDIASERVICECORE_SHA"
+          git clone https://github.com/yuliskov/SharedModules.git SmartTube/SharedModules
+          git -C SmartTube/SharedModules checkout "$SHAREDMODULES_SHA"
+
+      - name: Apply Rust patches
+        run: |
+          git -C SmartTube apply --verbose "$GITHUB_WORKSPACE/PATCHES/SmartTube.patch"
+          git -C SmartTube/MediaServiceCore apply --verbose "$GITHUB_WORKSPACE/PATCHES/MediaServiceCore.patch"
+
+      - name: Apply YouTube TV 1:1 UI (Stage 1)
+        run: python3 "$GITHUB_WORKSPACE/scripts/apply_yt_ui.py"
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+
+      - name: Rust tests (host)
+        working-directory: SmartTube/MediaServiceCore/youtubeapi/rust/stjson
+        env:
+          ST_CORPUS: ${{ github.workspace }}/SmartTube/MediaServiceCore/youtubeapi/src/test/resources
+        run: cargo test --release
+
+      - name: Build libstjson.so for Android (arm, arm64, x86)
+        run: |
+          NDK_PATH=$(ls -d /usr/local/lib/android/sdk/ndk/* 2>/dev/null | sort -V | tail -n1)
+          if [ -z "$NDK_PATH" ]; then
+            yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.3.11579264"
+            NDK_PATH="/usr/local/lib/android/sdk/ndk/26.3.11579264"
+          fi
+          export ANDROID_NDK_HOME="$NDK_PATH"
+          sed -i 's/\r$//' SmartTube/MediaServiceCore/youtubeapi/rust/build-android.sh
+          chmod +x SmartTube/MediaServiceCore/youtubeapi/rust/build-android.sh
+          SmartTube/MediaServiceCore/youtubeapi/rust/build-android.sh armeabi-v7a arm64-v8a x86
+
+      - name: Build Release APK
+        working-directory: SmartTube
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleStbetaRelease -PskipRust --stacktrace
+
+      - name: Sign Release APK
+        run: |
+          KEYSTORE="$RUNNER_TEMP/release.keystore"
+          keytool -genkeypair -v -keystore "$KEYSTORE" -alias smarttube \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=SmartTube, OU=Dev, O=Custom, L=Kyiv, S=Kyiv, C=UA"
+          APKSIGNER=$(ls /usr/local/lib/android/sdk/build-tools/*/apksigner | sort -V | tail -n1)
+          mkdir -p signed_apks
+          for apk in SmartTube/smarttubetv/build/outputs/apk/stbeta/release/*.apk; do
+            base=$(basename "$apk" -unsigned.apk)
+            "$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android \
+              --out "signed_apks/${base}-signed.apk" "$apk"
+          done
+
+      - name: Verify Rust library and YouTube UI assets inside APK
+        run: |
+          APK=$(ls signed_apks/*universal*.apk signed_apks/*armeabi-v7a*.apk 2>/dev/null | head -n1)
+          echo "$APK"
+          unzip -l "$APK" | grep -E "libstjson|yt_thumb_focus_ring|youtube_sans_bold" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartTube-rust-yt-ui-stage1-apk
+          path: signed_apks/*.apk
+          if-no-files-found: error
