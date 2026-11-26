@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
 """
-YouTube TV 1:1 UI + Ultra-Fast Video Startup Patcher for SmartTube.
-Includes:
-  [FAST VIDEO STARTUP]
-  - ExoPlayer DefaultLoadControl instant start:
-      bufferForPlaybackMs: 2500ms -> 400ms
-      bufferForPlaybackAfterRebufferMs: 5000ms -> 800ms
-      (patched in both defaults and Builder.setBufferDurationsMs / constructor)
-  - Background startup warmup thread in Application.onCreate():
-      * Eagerly preloads Rust libstjson.so (NativeJson) off main thread
-      * Pre-resolves DNS & warms TLS connections to youtubei.googleapis.com,
-        redirector.googlevideo.com, www.youtube.com, i.ytimg.com
-  - Glide RGB_565 thumbnail decoding (halves RAM usage on 1 GB Mi TV Stick)
+YouTube TV (2025-2026) 1:1 Home Screen & Collapsible Left Drawer + Ultra-Fast Video Startup
+Pixel-calibrated directly from Mi TV Stick 1920x1080 ADB screenshots (xhdpi, 960x540dp):
+  [HOME SCREEN - 1:1 with screenshot_20261126_091356.png]
+  - Pure #0F0F0F canvas & drawer background
+  - Top bar (y=33dp): circular user avatar at x=25dp, #272727 Mic circle (36dp) at x=79dp,
+    #272727 Search pill ("Поиск", 313x36dp, 18dp radius) at x=124dp, official YouTube Play
+    badge + "YouTube" wordmark (YouTube Sans Bold) pinned top-right (marginEnd=55dp).
+    SmartTube red search orb, clock, date, S-beta badge & extra orbs hidden cleanly.
+  - Video cards: 360x202dp (16:9, 2 full cards + peek of 3rd), 12dp rounded corners,
+    crisp 3.5dp solid #F1F1F1 focus ring drawn unclipped via dispatchDraw(Canvas),
+    borderless title (#F1F1F1) + channel/views (#AAAAAA) directly on #0F0F0F, #FF0033 progress bar.
 
-  [YOUTUBE TV UI]
-  - Official YouTube TV palette (#0F0F0F canvas, #272727 surfaces, #F1F1F1 focus, #FF0033 progress)
-  - Auto-detects any .ttf font in repo (YouTube Sans Bold)
-  - 10dp rounded video thumbnails + guaranteed-visible double-bezel white focus ring
-    drawn via zero-allocation dispatchDraw(Canvas) (never clipped by clipToOutline or RecyclerView)
-  - Borderless metadata typography directly on #0F0F0F
-  - Safe top spacing (108dp) so cards never collide with top bar until Stage 3 full top-bar rewrite
-  - Prints exact paths of SmartTube Browse/Title/Header/ExoPlayer classes for ADB 1:1 polish
+  [LEFT NAVIGATION RAIL <-> EXPANDED DRAWER - 1:1 with screenshot_20261126_091356.png & yt_menu.png]
+  - Collapsed (browsing videos): slim 74dp #0F0F0F left icon rail with YouTube thin-stroke
+    vector icons (active icon bright #FFFFFF / filled Home, inactive #9A9A9A), labels hidden,
+    cards start at x=74dp, Mic + Search pill sit at x=79dp.
+  - Expanded (D-pad Left): smoothly expands to 250dp #0F0F0F drawer, cards glide to x=268dp,
+    Mic + Search pill glide to x=267dp, focused row renders as 222x39dp solid #F1F1F1 rounded
+    rectangle (12dp radius) with #0F0F0F dark icon & bold text; unfocused rows stay crisp #F1F1F1.
+  - Official YouTube TV vector icon set auto-mapped to RU / UK / EN section titles.
+
+  [ULTRA-FAST VIDEO STARTUP]
+  - ExoPlayer DefaultLoadControl: bufferForPlaybackMs=400ms, afterRebuffer=800ms (safe master ctor patch)
+  - Background warmup daemon in Application.onCreate(): preloads Rust libstjson.so + DNS/TLS warmup
+  - Glide RGB_565 thumbnail decoding (halves bitmap RAM on 1 GB Mi TV Stick)
 """
 import os
 import re
@@ -30,6 +34,7 @@ from pathlib import Path
 ROOT = Path("SmartTube")
 WORKSPACE = Path(os.environ.get("GITHUB_WORKSPACE", "."))
 MODULES = [ROOT / "common", ROOT / "smarttubetv"]
+LEANBACK_DIR = ROOT / "leanback-1.0.0"
 
 YT_COLORS = {
     "window_background": "#0F0F0F",
@@ -40,8 +45,8 @@ YT_COLORS = {
     "dark_grey_dark": "#0F0F0F",
     "dark_grey_light": "#161616",
     "dark_grey_card": "#00000000",
-    "fastlane_background": "#121212",
-    "lb_browse_headers_background": "#121212",
+    "fastlane_background": "#0F0F0F",
+    "lb_browse_headers_background": "#0F0F0F",
     "lb_details_overview_bg_color": "#0F0F0F",
     "lb_details_description_bg_color": "#0F0F0F",
     "lb_basic_card_bg_color": "#00000000",
@@ -51,11 +56,11 @@ YT_COLORS = {
     "card_info_background": "#00000000",
     "card_selected_background": "#00000000",
     "card_selected_text_background": "#00000000",
-    "lb_default_brand_color": "#121212",
+    "lb_default_brand_color": "#0F0F0F",
     "lb_default_brand_color_dark": "#0F0F0F",
     "lb_default_search_color": "#272727",
     "lb_default_search_icon_color": "#F1F1F1",
-    "lb_control_button_color": "#26FFFFFF",
+    "lb_control_button_color": "#272727",
     "lb_control_button_text": "#F1F1F1",
     "accent": "#F1F1F1",
     "colorAccent": "#F1F1F1",
@@ -78,7 +83,7 @@ DRAWABLE_THUMB_BG = """<?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
     <solid android:color="#1A1A1A" />
-    <corners android:radius="10dp" />
+    <corners android:radius="12dp" />
 </shape>
 """
 
@@ -107,9 +112,53 @@ DRAWABLE_PROGRESS_BAR = """<?xml version="1.0" encoding="utf-8"?>
 </layer-list>
 """
 
+# Top bar Search Pill (#272727 normal -> #F1F1F1 focused, 18dp pill radius)
+DRAWABLE_SEARCH_PILL_BG = """<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#F1F1F1" />
+            <corners android:radius="18dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#272727" />
+            <corners android:radius="18dp" />
+        </shape>
+    </item>
+</selector>
+"""
+
+# Top bar Mic Circle (36dp oval, #272727 normal -> #F1F1F1 focused)
+DRAWABLE_MIC_CIRCLE_BG = """<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <shape android:shape="oval">
+            <solid android:color="#F1F1F1" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="#272727" />
+        </shape>
+    </item>
+</selector>
+"""
+
+# Expanded left drawer focused item pill: exact 12dp rounded rectangle (#F1F1F1) from yt_menu.png
+DRAWABLE_DRAWER_PILL_FOCUSED = """<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#F1F1F1" />
+    <corners android:radius="12dp" />
+</shape>
+"""
+
+# Official YouTube Play badge (31x21.5dp) for top-right header
 DRAWABLE_YT_PLAY_BADGE = """<?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="32dp"
+    android:width="31dp"
     android:height="22dp"
     android:viewportWidth="32"
     android:viewportHeight="22">
@@ -122,33 +171,112 @@ DRAWABLE_YT_PLAY_BADGE = """<?xml version="1.0" encoding="utf-8"?>
 </vector>
 """
 
-DRAWABLE_DRAWER_ITEM_BG = """<?xml version="1.0" encoding="utf-8"?>
+# ColorStateList for Search Pill text (no focus listener conflict!)
+COLOR_SEARCH_PILL_TEXT = """<?xml version="1.0" encoding="utf-8"?>
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:state_focused="true">
-        <shape android:shape="rectangle">
-            <solid android:color="#F1F1F1" />
-            <corners android:radius="22dp" />
-        </shape>
-    </item>
-    <item android:state_selected="true">
-        <shape android:shape="rectangle">
-            <solid android:color="#1FFFFFFF" />
-            <corners android:radius="22dp" />
-        </shape>
-    </item>
-    <item>
-        <shape android:shape="rectangle">
-            <solid android:color="@android:color/transparent" />
-            <corners android:radius="22dp" />
-        </shape>
-    </item>
+    <item android:state_focused="true" android:color="#0F0F0F" />
+    <item android:color="#AAAAAA" />
 </selector>
 """
+
+# Official YouTube TV thin-stroke vector icon set (matching screenshot_20261126_091356.png & yt_menu.png)
+YT_VECTOR_ICONS = {
+    "yt_ic_mic.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="20dp" android:height="20dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M12,3c-1.66,0 -3,1.37 -3,3.07v5.86c0,1.7 1.34,3.07 3,3.07s3,-1.37 3,-3.07V6.07C15,4.37 13.66,3 12,3zM13.5,11.93c0,0.87 -0.67,1.57 -1.5,1.57s-1.5,-0.7 -1.5,-1.57V6.07c0,-0.87 0.67,-1.57 1.5,-1.57s1.5,0.7 1.5,1.57V11.93zM18.5,12h-1.5c0,2.76 -2.24,5 -5,5s-5,-2.24 -5,-5H5.5c0,3.34 2.51,6.09 5.75,6.46V21h1.5v-2.54C15.99,18.09 18.5,15.34 18.5,12z" />
+</vector>""",
+    "yt_ic_search.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M20.87,20.17l-5.59,-5.59C16.35,13.35 17,11.75 17,10c0,-3.87 -3.13,-7 -7,-7s-7,3.13 -7,7s3.13,7 7,7c1.75,0 3.35,-0.65 4.58,-1.71l5.59,5.59L20.87,20.17zM10,16c-3.31,0 -6,-2.69 -6,-6s2.69,-6 6,-6s6,2.69 6,6S13.31,16 10,16z" />
+</vector>""",
+    "yt_ic_home.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M12,4.33l7,6.12V20h-4v-6H9v6H5v-9.55L12,4.33M12,3L4,10v11h6v-6h4v6h6V10L12,3L12,3z" />
+</vector>""",
+    "yt_ic_home_filled.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M4,10v11h6v-6h4v6h6V10l-8,-7L4,10z" />
+</vector>""",
+    "yt_ic_shorts.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M10,14.65v-5.3L15,12L10,14.65zM17.77,10.32c-0.77,-0.32 -1.2,-0.5 -1.2,-0.5L18,9.06c1.84,-0.96 2.53,-3.23 1.56,-5.06s-3.24,-2.53 -5.07,-1.56L6,6.94c-1.29,0.68 -2.07,2.04 -2,3.49c0.07,1.42 0.93,2.67 2.22,3.25c0.03,0.01 1.2,0.5 1.2,0.5L6,14.93c-1.83,0.97 -2.53,3.24 -1.56,5.07c0.97,1.83 3.24,2.53 5.07,1.56l8.5,-4.5c1.29,-0.68 2.06,-2.04 1.99,-3.49C19.93,12.15 19.06,10.9 17.77,10.32zM17.53,16.17l-8.5,4.5c-1.34,0.71 -3.01,0.2 -3.72,-1.14c-0.71,-1.34 -0.2,-3.01 1.14,-3.72l2.04,-1.08l-1.21,-0.5c-0.01,0 -1.16,-0.48 -1.18,-0.49c-0.95,-0.42 -1.58,-1.34 -1.63,-2.38c-0.05,-1.06 0.52,-2.06 1.46,-2.56l8.5,-4.5c1.34,-0.71 3.01,-0.2 3.72,1.14c0.71,1.34 0.2,3.01 -1.14,3.72l-2.04,1.08l1.21,0.5c0.01,0 1.16,0.48 1.17,0.49c0.95,0.43 1.58,1.35 1.63,2.38C19.04,14.68 18.47,15.67 17.53,16.17z" />
+</vector>""",
+    "yt_ic_subscriptions.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M10,18v-6l5,3L10,18zM17,3H7v1h10V3zM20,6H4v1h16V6zM22,9H2v12h20V9zM3,10h18v10H3V10z" />
+</vector>""",
+    "yt_ic_library.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M18,4v15.06l-5.42,-3.87L12,14.77l-0.58,0.42L6,19.06V4H18M19,3H5v18l7,-5l7,5V3L19,3z" />
+</vector>""",
+    "yt_ic_history.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M14.97,16.95L10,13.87V7h2v5.76l4.03,2.49L14.97,16.95zM22,12c0,5.51 -4.49,10 -10,10S2,17.51 2,12h1c0,4.96 4.04,9 9,9s9,-4.04 9,-9s-4.04,-9 -9,-9C8.81,3 5.92,4.64 4.28,7.38C4.17,7.56 4.06,7.75 3.97,7.94C3.96,7.96 3.95,7.98 3.94,8H8v1H2V3h1v4.74C3.04,7.67 3.09,7.59 3.13,7.51C3.24,7.3 3.35,7.09 3.47,6.89C5.28,3.83 8.48,2 12,2C17.51,2 22,6.49 22,12z" />
+</vector>""",
+    "yt_ic_music.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M12,3c-4.96,0 -9,4.04 -9,9s4.04,9 9,9s9,-4.04 9,-9S16.96,3 12,3zM12,20c-4.41,0 -8,-3.59 -8,-8s3.59,-8 8,-8s8,3.59 8,8S16.41,20 12,20zM12,7c-2.76,0 -5,2.24 -5,5s2.24,5 5,5s5,-2.24 5,-5S14.76,7 12,7zM12,16c-2.21,0 -4,-1.79 -4,-4s1.79,-4 4,-4s4,1.79 4,4S14.21,16 12,16zM10.5,9.5l4.5,2.5l-4.5,2.5V9.5z" />
+</vector>""",
+    "yt_ic_news.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M11,11v6H7v-6H11M12,10H6v8h6V10L12,10zM3,3.03V21h14l4,-4V3.03H3zM20,16.59L16.59,20H4V4.03h16V16.59zM18,7H6v1h12V7zM18,10h-5v1h5V10zM18,13h-5v1h5V13zM18,16h-5v1h5V16z" />
+</vector>""",
+    "yt_ic_gaming.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M10,12H8v2H6v-2H4v-2h2V8h2v2h2V12zM17,12.5c0,-0.83 -0.67,-1.5 -1.5,-1.5S14,11.67 14,12.5c0,0.83 0.67,1.5 1.5,1.5S17,13.33 17,12.5zM20,9.5C20,8.67 19.33,8 18.5,8S17,8.67 17,9.5c0,0.83 0.67,1.5 1.5,1.5S20,10.33 20,9.5zM16.97,5.15l-4.5,2.53L12,7.95l-0.47,-0.27l-4.5,-2.53L3,7.39v6.43l8.98,5.04L21,13.82V7.39L16.97,5.15M16.97,4l5.03,2.8v7.6L11.98,20L2,14.4V6.8L7.03,4l4.97,2.8L16.97,4L16.97,4z" />
+</vector>""",
+    "yt_ic_sports.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M18,5V2H6v3H3v6l3.23,1.61c0.7,2.5 2.97,4.34 5.69,4.38L12,19v3H7v1h10v-1h-5v-3l0.08,-2.01c2.72,-0.04 4.99,-1.88 5.69,-4.38L21,11V5H18zM6,11.38l-2,-1V6h2V11.38zM17,11c0,2.76 -2.24,5 -5,5s-5,-2.24 -5,-5V3h10V11zM20,10.38l-2,1V6h2V10.38z" />
+</vector>""",
+    "yt_ic_movies.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M22.01,4L2,4v16h20L22.01,4zM3,5h2.59l1.5,3H4.59L3,5zM7.59,5h2.59l1.5,3H9.09L7.59,5zM12.18,5h2.59l1.5,3h-2.59L12.18,5zM16.77,5h2.59l1.5,3h-2.59L16.77,5zM21,19H3V9h18V19z" />
+</vector>""",
+    "yt_ic_channels.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M11,7l6,3.5L11,14V7L11,7zM18,20H4V6H3v15h15V20zM21,18H6V3h15V18zM7,17h13V4H7V17z" />
+</vector>""",
+    "yt_ic_settings.xml": """<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="22dp" android:height="22dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M12,9c1.65,0 3,1.35 3,3s-1.35,3 -3,3s-3,-1.35 -3,-3S10.35,9 12,9M12,8c-2.21,0 -4,1.79 -4,4s1.79,4 4,4s4,-1.79 4,-4S14.21,8 12,8L12,8zM13.22,3l0.55,2.2l0.13,0.51l0.5,0.18c0.61,0.23 1.19,0.56 1.72,0.98l0.4,0.32l0.5,-0.14l2.17,-0.62l1.22,2.11l-1.63,1.59l-0.37,0.36l0.08,0.51c0.05,0.32 0.08,0.64 0.08,0.98s-0.03,0.66 -0.08,0.98l-0.08,0.51l0.37,0.36l1.63,1.59l-1.22,2.11l-2.17,-0.62l-0.5,-0.14l-0.4,0.32c-0.53,0.43 -1.11,0.76 -1.72,0.98l-0.5,0.18l-0.13,0.51L13.22,21h-2.44l-0.55,-2.2l-0.13,-0.51l-0.5,-0.18C9,17.88 8.42,17.55 7.88,17.12l-0.4,-0.32l-0.5,0.14l-2.17,0.62L3.6,15.44l1.63,-1.59l0.37,-0.36l-0.08,-0.51C5.47,12.66 5.44,12.33 5.44,12s0.03,-0.66 0.08,-0.98l0.08,-0.51l-0.37,-0.36L3.6,8.56l1.22,-2.11l2.17,0.62l0.5,0.14l0.4,-0.32C8.42,6.45 9,6.12 9.61,5.9l0.5,-0.18l0.13,-0.51L10.78,3H13.22M14,2h-4L9.26,4.96c-0.73,0.27 -1.4,0.66 -2,1.14L4.34,5.27l-2,3.46l2.19,2.13C4.47,11.23 4.44,11.61 4.44,12s0.03,0.77 0.09,1.14l-2.19,2.13l2,3.46l2.92,-0.83c0.6,0.48 1.27,0.87 2,1.14L10,22h4l0.74,-2.96c0.73,-0.27 1.4,-0.66 2,-1.14l2.92,0.83l2,-3.46l-2.19,-2.13c0.06,-0.37 0.09,-0.75 0.09,-1.14s-0.03,-0.77 -0.09,-1.14l2.19,-2.13l-2,-3.46L16.74,6.1c-0.6,-0.48 -1.27,-0.87 -2,-1.14L14,2L14,2z" />
+</vector>""",
+}
 
 EXTRA_YT_VALUES = """<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="yt_canvas_bg">#0F0F0F</color>
-    <color name="yt_drawer_bg">#121212</color>
+    <color name="yt_drawer_bg">#0F0F0F</color>
     <color name="yt_surface_bg">#272727</color>
     <color name="yt_dialog_bg">#161616</color>
     <color name="yt_focus_white">#F1F1F1</color>
@@ -206,16 +334,23 @@ def write_shared_resources(res_dir: Path):
         "yt_thumb_rounded_bg.xml": DRAWABLE_THUMB_BG,
         "yt_badge_bg.xml": DRAWABLE_BADGE_BG,
         "yt_card_progress.xml": DRAWABLE_PROGRESS_BAR,
+        "yt_search_pill_bg.xml": DRAWABLE_SEARCH_PILL_BG,
+        "yt_mic_circle_bg.xml": DRAWABLE_MIC_CIRCLE_BG,
+        "yt_drawer_pill_focused.xml": DRAWABLE_DRAWER_PILL_FOCUSED,
         "yt_play_badge.xml": DRAWABLE_YT_PLAY_BADGE,
-        "yt_drawer_item_bg.xml": DRAWABLE_DRAWER_ITEM_BG,
     }
+    files.update(YT_VECTOR_ICONS)
     for name, content in files.items():
         (drawable_dir / name).write_text(content.strip() + "\n", encoding="utf-8")
+
+    color_dir = res_dir / "color"
+    color_dir.mkdir(parents=True, exist_ok=True)
+    (color_dir / "yt_search_pill_text.xml").write_text(COLOR_SEARCH_PILL_TEXT.strip() + "\n", encoding="utf-8")
 
     values_dir = res_dir / "values"
     values_dir.mkdir(parents=True, exist_ok=True)
     (values_dir / "yt_theme_tokens.xml").write_text(EXTRA_YT_VALUES.strip() + "\n", encoding="utf-8")
-    print(f"[YT-UI] Wrote YouTube TV drawables & color tokens -> {res_dir}")
+    print(f"[YT-UI] Wrote YouTube TV drawables, 14 vector icons & color tokens -> {res_dir}")
 
 
 def patch_colors_xml(xml_path: Path):
@@ -225,651 +360,4 @@ def patch_colors_xml(xml_path: Path):
     changed = 0
     for key, hex_val in YT_COLORS.items():
         pattern = re.compile(rf'(<color\s+name="{re.escape(key)}"[^>]*>)([^<]+)(</color>)')
-        new_text, count = pattern.subn(rf"\g<1>{hex_val}\g<3>", text)
-        if count:
-            text = new_text
-            changed += count
-    if changed:
-        xml_path.write_text(text, encoding="utf-8")
-        print(f"[YT-UI] Updated {changed} color tokens in {xml_path}")
-
-
-def patch_dimens_xml(xml_path: Path):
-    text = xml_path.read_text(encoding="utf-8")
-    dimens_map = {
-        # Keep safe 108dp top margin so first row never collides with top bar
-        "lb_browse_rows_margin_top": "108dp",
-        "lb_browse_padding_start": "44dp",
-        "lb_browse_padding_end": "44dp",
-        "lb_browse_item_margin": "16dp",
-        "lb_browse_row_title_text_size": "18sp",
-        "lb_basic_card_title_text_size": "14sp",
-        "lb_basic_card_content_text_size": "12sp",
-        "lb_basic_card_info_padding_top": "9dp",
-        "lb_basic_card_info_padding_bottom": "4dp",
-        "lb_basic_card_info_padding_horizontal": "2dp",
-        "card_width": "256dp",
-        "card_height": "144dp",
-    }
-    changed = 0
-    for key, val in dimens_map.items():
-        pattern = re.compile(rf'(<dimen\s+name="{re.escape(key)}"[^>]*>)([^<]+)(</dimen>)')
-        new_text, count = pattern.subn(rf"\g<1>{val}\g<3>", text)
-        if count:
-            text = new_text
-            changed += count
-    if changed:
-        xml_path.write_text(text, encoding="utf-8")
-        print(f"[YT-UI] Updated {changed} dimens in {xml_path}")
-
-
-def upsert_style_item(style_block: str, item_name: str, item_val: str) -> str:
-    pat = re.compile(rf'(<item\s+name="{re.escape(item_name)}"[^>]*>)([^<]+)(</item>)')
-    if pat.search(style_block):
-        return pat.sub(rf"\g<1>{item_val}\g<3>", style_block, count=1)
-    return style_block.replace(
-        "</style>",
-        f'        <item name="{item_name}">{item_val}</item>\n    </style>',
-        1,
-    )
-
-
-def patch_styles_and_themes(xml_path: Path, has_font: bool):
-    text = xml_path.read_text(encoding="utf-8")
-    original = text
-
-    attr_replacements = {
-        "android:windowBackground": "@color/yt_canvas_bg",
-        "android:colorBackground": "@color/yt_canvas_bg",
-        "defaultBrandColor": "@color/yt_drawer_bg",
-        "defaultBrandColorDark": "@color/yt_canvas_bg",
-        "cardBackground": "@android:color/transparent",
-        "infoAreaBackground": "@android:color/transparent",
-    }
-    for attr, val in attr_replacements.items():
-        text = re.sub(
-            rf'(<item\s+name="{re.escape(attr)}"[^>]*>)[^<]+(</item>)',
-            rf"\g<1>{val}\g<2>",
-            text,
-        )
-
-    if has_font:
-        def patch_header_style(match: re.Match) -> str:
-            block = match.group(0)
-            name_m = re.search(r'name="([^"]+)"', block)
-            if not name_m:
-                return block
-            sname = name_m.group(1)
-            if any(k in sname for k in ("Row.Header", "RowHeader", "BrowseTitle", "HeaderText", "DialogTitle")):
-                block = upsert_style_item(block, "android:fontFamily", "@font/youtube_sans_bold")
-                block = upsert_style_item(block, "android:textColor", "@color/yt_text_primary")
-            return block
-
-        text = re.sub(r"<style\b[^>]*>.*?</style>", patch_header_style, text, flags=re.DOTALL)
-
-    if text != original:
-        xml_path.write_text(text, encoding="utf-8")
-        print(f"[YT-UI] Patched theme styles in {xml_path}")
-
-
-def upsert_attr_in_xml_tag(xml_text: str, view_id: str, attrs: dict) -> str:
-    tag_pat = re.compile(
-        rf'(<[A-Za-z0-9_.]+(?:\s+[^>]*?)?android:id="@\+id/{re.escape(view_id)}"[^>]*?/?>)',
-        flags=re.DOTALL,
-    )
-
-    def repl(match: re.Match) -> str:
-        tag = match.group(1)
-        for attr, val in attrs.items():
-            attr_pat = re.compile(rf'({re.escape(attr)}=")([^"]*)(")')
-            if attr_pat.search(tag):
-                tag = attr_pat.sub(rf"\g<1>{val}\g<3>", tag, count=1)
-            else:
-                if tag.endswith("/>"):
-                    tag = tag[:-2].rstrip() + f'\n        {attr}="{val}" />'
-                else:
-                    tag = tag[:-1].rstrip() + f'\n        {attr}="{val}">'
-        return tag
-
-    return tag_pat.sub(repl, xml_text)
-
-
-def patch_card_layouts(res_dir: Path):
-    layout_dir = res_dir / "layout"
-    if not layout_dir.exists():
-        return
-
-    for layout in layout_dir.glob("*card*.xml"):
-        text = layout.read_text(encoding="utf-8")
-        if "main_image" not in text:
-            continue
-
-        original = text
-        text = upsert_attr_in_xml_tag(
-            text, "info_field", {"android:background": "@android:color/transparent"}
-        )
-        text = upsert_attr_in_xml_tag(
-            text,
-            "main_image",
-            {
-                "android:background": "@drawable/yt_thumb_rounded_bg",
-                "android:duplicateParentState": "true",
-            },
-        )
-        if 'android:id="@+id/progress_bar"' in text:
-            text = upsert_attr_in_xml_tag(
-                text,
-                "progress_bar",
-                {"android:progressDrawable": "@drawable/yt_card_progress"},
-            )
-
-        if text != original:
-            layout.write_text(text, encoding="utf-8")
-            print(f"[YT-UI] Updated card layout {layout}")
-
-
-def ensure_imports(java_text: str, imports: list) -> str:
-    to_add = [imp for imp in imports if f"import {imp};" not in java_text]
-    if not to_add:
-        return java_text
-    pkg_m = re.search(r"^(package\s+[^;]+;\s*)", java_text, flags=re.MULTILINE)
-    if not pkg_m:
-        return java_text
-    block = "\n".join(f"import {imp};" for imp in to_add) + "\n"
-    pos = pkg_m.end()
-    return java_text[:pos] + "\n" + block + java_text[pos:]
-
-
-def patch_complex_card_view():
-    """
-    Bulletproof YouTube TV 1:1 Video Card:
-      - 10dp hardware-clipped rounded thumbnail (matches 4900.jpg / 4901.jpg)
-      - Crisp double-bezel white focus ring (#F1F1F1 outer 2.5dp + #0F0F0F inner 2dp gap)
-        drawn in dispatchDraw(Canvas) directly over main_image bounds:
-        * Never clipped by ViewOutlineProvider
-        * Never clipped by RecyclerView/HorizontalGridView
-        * Zero allocations per frame (pre-allocated Paint & RectF)
-      - Transparent info_field directly on #0F0F0F
-    """
-    candidates = [
-        p for p in ROOT.rglob("ComplexImageCardView.java")
-        if "build" not in p.parts
-    ]
-    if not candidates:
-        print("[YT-UI] WARNING: ComplexImageCardView.java not found!")
-        return
-
-    for java_file in candidates:
-        text = java_file.read_text(encoding="utf-8")
-        if "YT_DISPATCH_DRAW_RING" in text:
-            continue
-
-        text = ensure_imports(
-            text,
-            [
-                "android.graphics.Canvas",
-                "android.graphics.Color",
-                "android.graphics.Outline",
-                "android.graphics.Paint",
-                "android.graphics.RectF",
-                "android.os.Build",
-                "android.view.View",
-                "android.view.ViewOutlineProvider",
-                "android.widget.ImageView",
-                "android.widget.ProgressBar",
-                "android.widget.TextView",
-                "androidx.core.content.ContextCompat",
-            ],
-        )
-
-        # Hook onAttachedToWindow
-        attached_super_re = re.compile(r"(super\.onAttachedToWindow\s*\(\s*\)\s*;)")
-        attached_decl_re = re.compile(r"((?:protected|public)\s+void\s+onAttachedToWindow\s*\(\s*\)\s*\{)")
-        has_attached = attached_decl_re.search(text) is not None
-        if has_attached:
-            if attached_super_re.search(text):
-                text = attached_super_re.sub(r"\g<1>\n        applyYouTubeCardStyle();", text, count=1)
-            else:
-                text = attached_decl_re.sub(r"\g<1>\n        applyYouTubeCardStyle();", text, count=1)
-
-        # Hook setSelected(boolean)
-        selected_decl_re = re.compile(r"(public\s+void\s+setSelected\s*\(\s*boolean\s+(\w+)\s*\)\s*\{)")
-        sel_match = selected_decl_re.search(text)
-        has_selected = sel_match is not None
-        if has_selected:
-            param = sel_match.group(2)
-            super_sel_re = re.compile(rf"(super\.setSelected\s*\(\s*{re.escape(param)}\s*\)\s*;)")
-            if super_sel_re.search(text):
-                text = super_sel_re.sub(rf"\g<1>\n        applyYouTubeFocusState({param});", text, count=1)
-            else:
-                text = selected_decl_re.sub(rf"\g<1>\n        applyYouTubeFocusState({param});", text, count=1)
-
-        # Hook dispatchDraw(Canvas) if already present, else override cleanly
-        dispatch_decl_re = re.compile(r"((?:protected|public)\s+void\s+dispatchDraw\s*\(\s*Canvas\s+(\w+)\s*\)\s*\{)")
-        dd_match = dispatch_decl_re.search(text)
-        has_dispatch = dd_match is not None
-        if has_dispatch:
-            c_var = dd_match.group(2)
-            super_dd_re = re.compile(rf"(super\.dispatchDraw\s*\(\s*{re.escape(c_var)}\s*\)\s*;)")
-            if super_dd_re.search(text):
-                text = super_dd_re.sub(rf"\g<1>\n        drawYouTubeFocusRing({c_var});", text, count=1)
-            else:
-                text = dispatch_decl_re.sub(rf"\g<1>\n        drawYouTubeFocusRing({c_var});", text, count=1)
-
-        extra_overrides = ""
-        if not has_attached:
-            extra_overrides += """
-    @Override
-    protected void onAttachedToWindow() {
-        super.onAttachedToWindow();
-        applyYouTubeCardStyle();
-    }
-"""
-        if not has_selected:
-            extra_overrides += """
-    @Override
-    public void setSelected(boolean selected) {
-        super.setSelected(selected);
-        applyYouTubeFocusState(selected);
-    }
-"""
-        if not has_dispatch:
-            extra_overrides += """
-    @Override
-    protected void dispatchDraw(Canvas canvas) {
-        super.dispatchDraw(canvas);
-        drawYouTubeFocusRing(canvas);
-    }
-"""
-
-        helper_code = f"""
-    // YT_DISPATCH_DRAW_RING: 10dp rounded clip + unclipped double-bezel white focus ring
-    private boolean mYtStyled = false;
-    private Paint mYtRingWhitePaint = null;
-    private Paint mYtRingGapPaint = null;
-    private final RectF mYtRingRect = new RectF();
-
-    private View findYtViewByName(String idName) {{
-        int id = getResources().getIdentifier(idName, "id", getContext().getPackageName());
-        return id != 0 ? findViewById(id) : null;
-    }}
-
-    private void initYtPaints() {{
-        if (mYtRingWhitePaint != null) return;
-        float d = getResources().getDisplayMetrics().density;
-        mYtRingWhitePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        mYtRingWhitePaint.setStyle(Paint.Style.STROKE);
-        mYtRingWhitePaint.setColor(0xFFF1F1F1);
-        mYtRingWhitePaint.setStrokeWidth(2.6f * d);
-
-        mYtRingGapPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        mYtRingGapPaint.setStyle(Paint.Style.STROKE);
-        mYtRingGapPaint.setColor(0xFF0F0F0F);
-        mYtRingGapPaint.setStrokeWidth(2.2f * d);
-    }}
-
-    private void applyYouTubeCardStyle() {{
-        if (mYtStyled) return;
-        mYtStyled = true;
-
-        initYtPaints();
-        setBackgroundColor(Color.TRANSPARENT);
-
-        View infoField = findYtViewByName("info_field");
-        if (infoField != null) {{
-            infoField.setBackgroundColor(Color.TRANSPARENT);
-        }}
-
-        ImageView img = getMainImageView();
-        if (img != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {{
-            final float radiusPx = 10f * getResources().getDisplayMetrics().density;
-            img.setOutlineProvider(new ViewOutlineProvider() {{
-                @Override
-                public void getOutline(View view, Outline outline) {{
-                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radiusPx);
-                }}
-            }});
-            img.setClipToOutline(true);
-        }}
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {{
-            final float badgeRadius = 4f * getResources().getDisplayMetrics().density;
-            for (String bn : new String[] {{"duration_badge", "badge_text"}}) {{
-                View badge = findYtViewByName(bn);
-                if (badge != null) {{
-                    badge.setOutlineProvider(new ViewOutlineProvider() {{
-                        @Override
-                        public void getOutline(View view, Outline outline) {{
-                            outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), badgeRadius);
-                        }}
-                    }});
-                    badge.setClipToOutline(true);
-                }}
-            }}
-        }}
-
-        View pb = findYtViewByName("progress_bar");
-        if (pb instanceof ProgressBar) {{
-            int pbRes = getResources().getIdentifier("yt_card_progress", "drawable", getContext().getPackageName());
-            if (pbRes != 0) {{
-                ((ProgressBar) pb).setProgressDrawable(ContextCompat.getDrawable(getContext(), pbRes));
-            }}
-        }}
-
-        applyYouTubeFocusState(isSelected() || isFocused());
-    }}
-
-    private void applyYouTubeFocusState(boolean selected) {{
-        setBackgroundColor(Color.TRANSPARENT);
-        View infoField = findYtViewByName("info_field");
-        if (infoField != null) {{
-            infoField.setBackgroundColor(Color.TRANSPARENT);
-        }}
-
-        View title = findYtViewByName("title_text");
-        if (title instanceof TextView) {{
-            ((TextView) title).setTextColor(selected ? 0xFFF1F1F1 : 0xFFCCCCCC);
-        }}
-        View content = findYtViewByName("content_text");
-        if (content instanceof TextView) {{
-            ((TextView) content).setTextColor(0xFFAAAAAA);
-        }}
-        invalidate();
-    }}
-
-    private void drawYouTubeFocusRing(Canvas canvas) {{
-        if (!isSelected() && !isFocused()) {{
-            return;
-        }}
-        ImageView img = getMainImageView();
-        if (img == null || img.getWidth() <= 0 || img.getHeight() <= 0) {{
-            return;
-        }}
-        initYtPaints();
-        float ox = 0f;
-        float oy = 0f;
-        View v = img;
-        int guard = 0;
-        while (v != null && v != this && guard++ < 8) {{
-            ox += v.getLeft() + v.getTranslationX();
-            oy += v.getTop() + v.getTranslationY();
-            v = (v.getParent() instanceof View) ? (View) v.getParent() : null;
-        }}
-        float d = getResources().getDisplayMetrics().density;
-        float w = img.getWidth();
-        float h = img.getHeight();
-
-        // Inner dark gap hairline (#0F0F0F) inside the white ring
-        float gapInset = 3.5f * d;
-        mYtRingRect.set(ox + gapInset, oy + gapInset, ox + w - gapInset, oy + h - gapInset);
-        canvas.drawRoundRect(mYtRingRect, 7.5f * d, 7.5f * d, mYtRingGapPaint);
-
-        // Outer crisp YouTube TV white focus frame (#F1F1F1) flush with 10dp thumbnail edge
-        float whiteInset = 1.3f * d;
-        mYtRingRect.set(ox + whiteInset, oy + whiteInset, ox + w - whiteInset, oy + h - whiteInset);
-        canvas.drawRoundRect(mYtRingRect, 9.5f * d, 9.5f * d, mYtRingWhitePaint);
-    }}
-{extra_overrides}
-"""
-
-        idx = text.rfind("}")
-        if idx != -1:
-            text = text[:idx] + helper_code + "\n}\n"
-            java_file.write_text(text, encoding="utf-8")
-            print(f"[YT-UI] Patched ComplexImageCardView (dispatchDraw double-bezel ring) -> {java_file}")
-
-
-# ==============================================================================
-# ULTRA-FAST VIDEO STARTUP OPTIMIZATIONS
-# ==============================================================================
-
-def patch_exoplayer_fast_buffer():
-    """
-    Reduces ExoPlayer initial playback buffer from 2500ms -> 400ms and rebuffer from 5000ms -> 800ms
-    directly inside DefaultLoadControl.java (both default constants and Builder.setBufferDurationsMs /
-    constructors). Guaranteed to satisfy all ExoPlayer assertGreaterOrEqual checks because lowering
-    bufferForPlaybackMs <= orig <= minBufferMs can never violate minBufferMs >= bufferForPlaybackMs.
-    """
-    patched_files = 0
-    for java_file in ROOT.rglob("DefaultLoadControl.java"):
-        if "build" in java_file.parts:
-            continue
-        text = java_file.read_text(encoding="utf-8")
-        if "YT_FAST_BUFFER" in text:
-            continue
-
-        original = text
-        changes = []
-
-        # 1. Lower static default constants
-        new_text, c1 = re.subn(
-            r"(public\s+static\s+final\s+int\s+DEFAULT_BUFFER_FOR_PLAYBACK_MS\s*=\s*)\d+(\s*;)",
-            r"\g<1>400\g<2> // YT_FAST_BUFFER (was 2500ms)",
-            text,
-        )
-        if c1:
-            text = new_text
-            changes.append("DEFAULT_BUFFER_FOR_PLAYBACK_MS=400")
-
-        new_text, c2 = re.subn(
-            r"(public\s+static\s+final\s+int\s+DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS\s*=\s*)\d+(\s*;)",
-            r"\g<1>800\g<2> // YT_FAST_BUFFER (was 5000ms)",
-            text,
-        )
-        if c2:
-            text = new_text
-            changes.append("DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS=800")
-
-        # 2. Clamp Builder.setBufferDurationsMs(...) so SmartTube's own Low/Med/High profiles
-        #    also start playing after 400ms instead of waiting 1500-2500ms
-        builder_re = re.compile(
-            r"(public\s+Builder\s+setBufferDurationsMs\s*\(\s*"
-            r"int\s+(\w+)\s*,\s*int\s+(\w+)\s*,\s*int\s+(\w+)\s*,\s*int\s+(\w+)\s*\)\s*\{)"
-        )
-        m = builder_re.search(text)
-        if m:
-            p_play = m.group(4)
-            p_rebuf = m.group(5)
-            clamp = (
-                f"\n      // YT_FAST_BUFFER: cap startup playback wait for instant first frame\n"
-                f"      {p_play} = Math.min({p_play}, 400);\n"
-                f"      {p_rebuf} = Math.min({p_rebuf}, 800);"
-            )
-            text = text[:m.end()] + clamp + text[m.end():]
-            changes.append("Builder.setBufferDurationsMs clamped(400/800)")
-
-        # 3. Also clamp direct DefaultLoadControl(...) constructors that take bufferForPlaybackMs
-        ctor_re = re.compile(
-            r"((?:protected|public)\s+DefaultLoadControl\s*\([^)]*"
-            r"int\s+(bufferForPlaybackMs)\s*,\s*int\s+(bufferForPlaybackAfterRebufferMs)[^)]*\)\s*\{)"
-        )
-        def clamp_ctor(cm: re.Match) -> str:
-            return (
-                cm.group(1)
-                + "\n    // YT_FAST_BUFFER: cap startup wait in direct constructor\n"
-                + "    bufferForPlaybackMs = Math.min(bufferForPlaybackMs, 400);\n"
-                + "    bufferForPlaybackAfterRebufferMs = Math.min(bufferForPlaybackAfterRebufferMs, 800);"
-            )
-        new_text, c3 = ctor_re.subn(clamp_ctor, text)
-        if c3:
-            text = new_text
-            changes.append(f"DefaultLoadControl ctor clamped x{c3}")
-
-        if text != original:
-            java_file.write_text(text, encoding="utf-8")
-            patched_files += 1
-            print(f"[YT-FAST] Patched ExoPlayer LoadControl ({', '.join(changes)}) -> {java_file}")
-
-    if not patched_files:
-        print("[YT-FAST] WARNING: DefaultLoadControl.java not found in SmartTube tree!")
-
-
-def patch_application_warmup():
-    """
-    Injects a lightweight daemon thread in SmartTube's Application.onCreate() that:
-      1. Eagerly loads Rust libstjson.so (NativeJson) off main thread during cold start
-      2. Pre-resolves DNS & warms TLS/HTTP connections to YouTube API & googlevideo CDNs
-    """
-    app_candidates = []
-    for mod in MODULES:
-        if not mod.exists():
-            continue
-        for java_file in mod.rglob("*.java"):
-            if "build" in java_file.parts:
-                continue
-            text = java_file.read_text(encoding="utf-8", errors="ignore")
-            if re.search(r"class\s+\w+\s+extends\s+(?:MultiDex)?Application\b", text) and "onCreate()" in text:
-                app_candidates.append(java_file)
-
-    if not app_candidates:
-        print("[YT-FAST] WARNING: No Application subclass found for network/Rust warmup!")
-        return
-
-    for java_file in app_candidates:
-        text = java_file.read_text(encoding="utf-8")
-        if "YT_FAST_WARMUP" in text:
-            continue
-
-        new_text, count = re.subn(
-            r"(super\.onCreate\s*\(\s*\)\s*;)",
-            r"\g<1>\n        ytFastStartupWarmup();",
-            text,
-            count=1,
-        )
-        if not count:
-            continue
-
-        warmup_method = """
-    // YT_FAST_WARMUP: Preload Rust libstjson.so + pre-resolve YouTube/googlevideo DNS & TLS
-    private static volatile boolean sYtWarmupStarted = false;
-
-    private void ytFastStartupWarmup() {
-        if (sYtWarmupStarted) {
-            return;
-        }
-        sYtWarmupStarted = true;
-        Thread t = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    // 1. Eagerly trigger static initializer -> System.loadLibrary("stjson")
-                    Class.forName("com.liskovsoft.googlecommon.common.converters.jsonpath.nativeimpl.NativeJson");
-                } catch (Throwable ignored) {}
-
-                String[] hosts = new String[] {
-                    "youtubei.googleapis.com",
-                    "redirector.googlevideo.com",
-                    "www.youtube.com",
-                    "i.ytimg.com"
-                };
-                for (String host : hosts) {
-                    try {
-                        java.net.InetAddress.getAllByName(host);
-                    } catch (Throwable ignored) {}
-                }
-
-                String[] urls = new String[] {
-                    "https://youtubei.googleapis.com/generate_204",
-                    "https://redirector.googlevideo.com/generate_204"
-                };
-                for (String u : urls) {
-                    java.net.HttpURLConnection conn = null;
-                    try {
-                        conn = (java.net.HttpURLConnection) new java.net.URL(u).openConnection();
-                        conn.setRequestMethod("HEAD");
-                        conn.setConnectTimeout(1500);
-                        conn.setReadTimeout(1500);
-                        conn.setUseCaches(false);
-                        conn.getResponseCode();
-                    } catch (Throwable ignored) {
-                    } finally {
-                        if (conn != null) {
-                            try { conn.disconnect(); } catch (Throwable ignored) {}
-                        }
-                    }
-                }
-            }
-        }, "yt-fast-warmup");
-        t.setDaemon(true);
-        t.setPriority(Thread.NORM_PRIORITY - 1);
-        t.start();
-    }
-"""
-        idx = new_text.rfind("}")
-        if idx != -1:
-            new_text = new_text[:idx] + warmup_method + "\n}\n"
-            java_file.write_text(new_text, encoding="utf-8")
-            print(f"[YT-FAST] Injected Rust preload + YouTube/googlevideo DNS/TLS warmup -> {java_file}")
-
-
-def patch_glide_rgb565():
-    for java_file in ROOT.rglob("*Glide*.java"):
-        if "build" in java_file.parts:
-            continue
-        text = java_file.read_text(encoding="utf-8")
-        if "DecodeFormat.PREFER_ARGB_8888" in text:
-            new_text = text.replace("DecodeFormat.PREFER_ARGB_8888", "DecodeFormat.PREFER_RGB_565")
-            if new_text != text:
-                java_file.write_text(new_text, encoding="utf-8")
-                print(f"[YT-FAST] Switched Glide to RGB_565 in {java_file}")
-        elif "applyOptions(" in text and "PREFER_RGB_565" not in text:
-            m = re.search(r"(public\s+void\s+applyOptions\s*\([^)]*GlideBuilder\s+(\w+)\s*\)\s*\{)", text)
-            if m:
-                b_var = m.group(2)
-                inject = (
-                    f"\n        {b_var}.setDefaultRequestOptions("
-                    "new com.bumptech.glide.request.RequestOptions()"
-                    ".format(com.bumptech.glide.load.DecodeFormat.PREFER_RGB_565));"
-                )
-                text = text[:m.end()] + inject + text[m.end():]
-                java_file.write_text(text, encoding="utf-8")
-                print(f"[YT-FAST] Injected Glide RGB_565 default in {java_file}")
-
-
-def print_ui_discovery():
-    """Print exact SmartTube Browse/Title/Header/ExoPlayer files for next 1:1 ADB UI pass."""
-    patterns = ("*Title*View*", "*Browse*Fragment*", "*Header*Presenter*", "*ExoPlayer*Initializer*", "*LoadControl*")
-    found = set()
-    for mod in MODULES:
-        if not mod.exists():
-            continue
-        for pat in patterns:
-            for p in mod.rglob(pat):
-                if "build" not in p.parts and p.suffix in (".java", ".xml"):
-                    found.add(str(p))
-    if found:
-        print("[YT-UI-DISCOVER] Key SmartTube UI/Player files:")
-        for item in sorted(found)[:35]:
-            print(f"  - {item}")
-
-
-def main():
-    if not ROOT.exists():
-        raise SystemExit("[YT-UI] SmartTube directory not found!")
-
-    primary_res = get_primary_res_dir()
-    has_font = install_font(primary_res)
-    write_shared_resources(primary_res)
-
-    for mod in MODULES:
-        res_dir = mod / "src" / "main" / "res"
-        if not res_dir.exists():
-            continue
-        for c_xml in res_dir.rglob("colors*.xml"):
-            patch_colors_xml(c_xml)
-        for d_xml in res_dir.rglob("dimens*.xml"):
-            patch_dimens_xml(d_xml)
-        for s_xml in list(res_dir.rglob("styles*.xml")) + list(res_dir.rglob("themes*.xml")):
-            patch_styles_and_themes(s_xml, has_font)
-        patch_card_layouts(res_dir)
-
-    patch_complex_card_view()
-    patch_exoplayer_fast_buffer()
-    patch_application_warmup()
-    patch_glide_rgb565()
-    print_ui_discovery()
-    print("[YT-UI] YouTube TV UI + Ultra-Fast Video Startup patches applied successfully.")
-
-
-if __name__ == "__main__":
-    main()
+        new_text, count = pa
